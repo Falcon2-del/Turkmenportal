@@ -23,7 +23,6 @@ DB_FILES = {"ru": "last_id_ru.txt", "tm": "last_id_tm.txt"}
 
 def get_last_saved_id(lang):
     if os.path.exists(DB_FILES[lang]):
-        # Исправлено: "24r" заменено на стандартный "r"
         with open(DB_FILES[lang], "r") as f:
             try:
                 return int(f.read().strip())
@@ -61,9 +60,8 @@ def send_email(subject, body_html):
 
 
 def parse_article(url):
-    """Парсит заголовок и тело статьи с Turkmenportal"""
+    """Парсит заголовок, дату и тело статьи с Turkmenportal"""
     try:
-        # Добавили полноценные заголовки, чтобы сайт отдавал корректную верстку
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
@@ -75,15 +73,18 @@ def parse_article(url):
 
         soup = BeautifulSoup(response.text, "html.parser")
 
-        # 1. Поиск заголовка (пробуем класс single-title, затем любой h1, затем тег title)
+        # 1. Поиск заголовка
         title_tag = soup.find("h1", class_="single-title") or soup.find("h1")
         if title_tag:
             title_text = title_tag.text.strip()
         else:
             title_text = soup.title.text.replace("- Turkmenportal", "").strip() if soup.title else "Без названия"
 
-        # 2. Поиск основного текста статьи
-        # На Turkmenportal контент обычно обернут в класс 'vul-content' или 'post-content'
+        # 2. Поиск даты публикации
+        date_tag = soup.find("time") or soup.find(class_="vul-date") or soup.find(class_="date")
+        date_text = date_tag.text.strip() if date_tag else "Дата не указана"
+
+        # 3. Поиск основного текста статьи
         content_div = (
             soup.find("div", class_="vul-content") or 
             soup.find("div", class_="post-content") or
@@ -91,19 +92,24 @@ def parse_article(url):
         )
 
         if content_div:
-            # Очищаем от ненужных скриптов или рекламы, если они есть внутри
+            # Очищаем от скриптов и стилей
             for s in content_div(["script", "style"]):
                 s.decompose()
+            
+            # Делаем ссылки на картинки абсолютными, чтобы они отображались в почте
+            for img in content_div.find_all("img"):
+                if img.get("src") and not img["src"].startswith("http"):
+                    img["src"] = "https://turkmenportal.com" + img["src"]
+                    
             content_html = str(content_div)
         else:
-            # Если блок не найден, собираем все абзацы p, которые есть на странице (крайний случай)
             paragraphs = soup.find_all("p")
             if paragraphs:
                 content_html = "".join([str(p) for p in paragraphs if len(p.text.strip()) > 10])
             else:
                 content_html = "Не удалось распарсить текст."
 
-        return title_text, content_html
+        return title_text, date_text, content_html
     except Exception as e:
         print(f"Ошибка при парсинге статьи {url}: {e}")
         return None
@@ -122,7 +128,6 @@ def check_news():
                 continue
 
             soup = BeautifulSoup(response.text, "html.parser")
-            # Ищем все ссылки, содержащие паттерн новостей
             links = soup.find_all("a", href=re.compile(rf"/{lang}/news/\d+"))
 
             last_saved_id = get_last_saved_id(lang)
@@ -147,18 +152,25 @@ def check_news():
                         article_data = parse_article(href)
 
                         if article_data:
-                            title, content = article_data
+                            title, date_str, content = article_data
+                            
+                            # Формируем тело письма: дата сверху, затем оригинальный HTML
                             email_body = f"""
-                            <h2><a href="{href}">{title}</a></h2>
-                            <hr>
-                            <div>{content}</div>
-                            <br><br>
-                            <small>Источник: {href}</small>
+                            <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
+                                <p style="color: #777; font-size: 14px; margin-bottom: 20px;">
+                                    <strong>Дата публикации:</strong> {date_str} | <strong>Язык:</strong> {lang.upper()}
+                                </p>
+                                <h2><a href="{href}" style="color: #0056b3; text-decoration: none;">{title}</a></h2>
+                                <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+                                <div>{content}</div>
+                                <br><br>
+                                <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+                                <small style="color: #999;">Источник: <a href="{href}">{href}</a></small>
+                            </div>
                             """
-                            send_email(
-                                f"[Turkmenportal {lang.upper()}] {title}",
-                                email_body,
-                            )
+                            
+                            # Тема письма теперь строго "Turkmenportal"
+                            send_email("Turkmenportal", email_body)
 
             if new_max_id > last_saved_id:
                 save_last_id(lang, new_max_id)
