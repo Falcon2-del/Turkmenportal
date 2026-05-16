@@ -1,0 +1,53 @@
+name: Remote Triggered Turkmenportal Parser
+
+on:
+  # Этот блок позволяет запускать скрипт через POST-запрос (сторонние сервисы)
+  repository_dispatch:
+    types: [trigger-parser]
+  # Позволяет также запускать вручную из интерфейса GitHub (для тестов)
+  workflow_dispatch:
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Проверка репозитория
+      uses: actions/checkout@v4
+
+    - name: Настройка Python
+      uses: actions/setup-python@v5
+      with:
+        python-python: '3.10'
+
+    - name: Установка библиотек
+      run: |
+        pip install requests beautifulsoup4
+
+    - name: Восстановление кэша ID новостей
+      uses: actions/cache@v4
+      with:
+        path: |
+          last_id_ru.txt
+          last_id_tm.txt
+        key: news-cache-${{ github.run_id }}
+        restore-keys: |
+          news-cache-
+
+    - name: Запуск парсера
+      env:
+        EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+        EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+        EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
+        SMTP_SERVER: "smtp.gmail.com" # Поменяйте, если почта не Gmail
+        SMTP_PORT: 587
+      run: python parser.py
+
+    # Сохраняем ID последних новостей, чтобы не отправлять их повторно при следующем запуске
+    - name: Сохранение кэша ID новостей
+      uses: actions/cache/save@v4
+      with:
+        path: |
+          last_id_ru.txt
+          last_id_tm.txt
+        key: news-cache-${{ github.run_id }}
