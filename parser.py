@@ -3,6 +3,7 @@ import re
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
 
@@ -80,9 +81,33 @@ def parse_article(url):
         else:
             title_text = soup.title.text.replace("- Turkmenportal", "").strip() if soup.title else "Без названия"
 
-        # 2. Поиск даты публикации
+        # 2. Поиск даты публикации с запасными вариантами
+        date_text = None
+        
+        # Вариант А: Стандартные теги верстки
         date_tag = soup.find("time") or soup.find(class_="vul-date") or soup.find(class_="date")
-        date_text = date_tag.text.strip() if date_tag else "Дата не указана"
+        if date_tag:
+            date_text = date_tag.text.strip()
+            
+        # Вариант Б: Мета-теги страницы
+        if not date_text:
+            meta_date = soup.find("meta", property="article:published_time") or soup.find("meta", itemprop="datePublished")
+            if meta_date and meta_date.get("content"):
+                date_text = meta_date["content"]
+
+        # Вариант В: Дата изменения/ответа из заголовков HTTP-ответа сервера
+        if not date_text:
+            server_date = response.headers.get("Last-Modified") or response.headers.get("Date")
+            if server_date:
+                try:
+                    # Переформатируем красивую дату из HTTP-формата (RFC 1123)
+                    dt = datetime.strptime(server_date, "%a, %d %b %Y %H:%M:%S %Z")
+                    date_text = dt.strftime("%d.%m.%Y %H:%M")
+                except Exception:
+                    date_text = server_date
+
+        if not date_text:
+            date_text = "Дата не определена"
 
         # 3. Поиск основного текста статьи
         content_div = (
@@ -92,11 +117,17 @@ def parse_article(url):
         )
 
         if content_div:
-            # Очищаем от скриптов и стилей
-            for s in content_div(["script", "style"]):
-                s.decompose()
+            # Полная очистка от скриптов, стилей, рекомендаций и рекламы
+            unwanted_selectors = [
+                "script", "style", ".interesting-news", ".related-news", 
+                ".share-blocks", ".tags-block", ".comments-block", 
+                "aside", ".read-also", ".banner"
+            ]
+            for selector in unwanted_selectors:
+                for match in content_div.select(selector):
+                    match.decompose()
             
-            # Делаем ссылки на картинки абсолютными, чтобы они отображались в почте
+            # Делаем ссылки на картинки абсолютными
             for img in content_div.find_all("img"):
                 if img.get("src") and not img["src"].startswith("http"):
                     img["src"] = "https://turkmenportal.com" + img["src"]
@@ -154,11 +185,11 @@ def check_news():
                         if article_data:
                             title, date_str, content = article_data
                             
-                            # Формируем тело письма: дата сверху, затем оригинальный HTML
+                            # Формируем тело письма без указания языка
                             email_body = f"""
                             <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
                                 <p style="color: #777; font-size: 14px; margin-bottom: 20px;">
-                                    <strong>Дата публикации:</strong> {date_str} | <strong>Язык:</strong> {lang.upper()}
+                                    <strong>Дата публикации:</strong> {date_str}
                                 </p>
                                 <h2><a href="{href}" style="color: #0056b3; text-decoration: none;">{title}</a></h2>
                                 <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
@@ -169,7 +200,6 @@ def check_news():
                             </div>
                             """
                             
-                            # Тема письма теперь строго "Turkmenportal"
                             send_email("Turkmenportal", email_body)
 
             if new_max_id > last_saved_id:
