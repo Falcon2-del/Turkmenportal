@@ -6,6 +6,7 @@ from email.mime.text import MIMEText
 from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
+from dateutil import parser as date_parser
 
 # Настройки из GitHub Secrets
 EMAIL_SENDER = os.environ.get("EMAIL_SENDER")
@@ -60,6 +61,28 @@ def send_email(subject, body_html):
         print(f"Ошибка отправки почты: {e}")
 
 
+def format_to_custom_date(date_source):
+    """Вспомогательная функция для приведения даты к формату ДД.ММ.ГГГГ ЧЧ:ММ:СС"""
+    if not date_source:
+        return None
+    try:
+        # Если это строка из заголовков HTTP сервера (RFC 1123)
+        if isinstance(date_source, str) and (date_source.endswith("GMT") or date_source.endswith("UTC")):
+            dt = datetime.strptime(date_source, "%a, %d %b %Y %H:%M:%S %Z")
+            return dt.strftime("%d.%m.%Y %H:%M:%S")
+        
+        # Если это стандартный объект datetime
+        if isinstance(date_source, datetime):
+            return date_source.strftime("%d.%m.%Y %H:%M:%S")
+            
+        # Для всех остальных текстовых форматов используем умный парсер
+        dt = date_parser.parse(str(date_source))
+        return dt.strftime("%d.%m.%Y %H:%M:%S")
+    except Exception:
+        # Если не получилось распарсить сложный текстовый формат, возвращаем как есть
+        return str(date_source)
+
+
 def parse_article(url):
     """Парсит заголовок, дату и тело статьи с Turkmenportal"""
     try:
@@ -81,33 +104,35 @@ def parse_article(url):
         else:
             title_text = soup.title.text.replace("- Turkmenportal", "").strip() if soup.title else "Без названия"
 
-        # 2. Поиск даты публикации с запасными вариантами
-        date_text = None
+        # 2. Поиск даты публикации с автоматическим переформатированием
+        raw_date = None
         
-        # Вариант А: Стандартные теги верстки
-        date_tag = soup.find("time") or soup.find(class_="vul-date") or soup.find(class_="date")
-        if date_tag:
-            date_text = date_tag.text.strip()
+        # Вариант А: Стандартные теги верстки (внутри тега time часто лежит аттрибут datetime)
+        time_tag = soup.find("time")
+        if time_tag:
+            raw_date = time_tag.get("datetime") or time_tag.text.strip()
+            
+        if not raw_date:
+            date_tag = soup.find(class_="vul-date") or soup.find(class_="date")
+            if date_tag:
+                raw_date = date_tag.text.strip()
             
         # Вариант Б: Мета-теги страницы
-        if not date_text:
+        if not raw_date:
             meta_date = soup.find("meta", property="article:published_time") or soup.find("meta", itemprop="datePublished")
             if meta_date and meta_date.get("content"):
-                date_text = meta_date["content"]
+                raw_date = meta_date["content"]
 
-        # Вариант В: Дата изменения/ответа из заголовков HTTP-ответа сервера
-        if not date_text:
-            server_date = response.headers.get("Last-Modified") or response.headers.get("Date")
-            if server_date:
-                try:
-                    # Переформатируем красивую дату из HTTP-формата (RFC 1123)
-                    dt = datetime.strptime(server_date, "%a, %d %b %Y %H:%M:%S %Z")
-                    date_text = dt.strftime("%d.%m.%Y %H:%M")
-                except Exception:
-                    date_text = server_date
+        # Вариант В: Заголовки HTTP-ответа сервера
+        if not raw_date:
+            raw_date = response.headers.get("Last-Modified") or response.headers.get("Date")
 
-        if not date_text:
-            date_text = "Дата не определена"
+        # Если совсем ничего не нашли — берем текущее время запуска
+        if not raw_date:
+            raw_date = datetime.now()
+
+        # Применяем форматирование ДД.ММ.ГГГГ ЧЧ:ММ:СС
+        date_text = format_to_custom_date(raw_date)
 
         # 3. Поиск основного текста статьи
         content_div = (
@@ -121,7 +146,8 @@ def parse_article(url):
             unwanted_selectors = [
                 "script", "style", ".interesting-news", ".related-news", 
                 ".share-blocks", ".tags-block", ".comments-block", 
-                "aside", ".read-also", ".banner"
+                "aside", ".read-also", ".banner", ".recommended-news",
+                "#recommended", ".post-recommendations"
             ]
             for selector in unwanted_selectors:
                 for match in content_div.select(selector):
@@ -185,7 +211,7 @@ def check_news():
                         if article_data:
                             title, date_str, content = article_data
                             
-                            # Формируем тело письма без указания языка
+                            # Тело письма
                             email_body = f"""
                             <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
                                 <p style="color: #777; font-size: 14px; margin-bottom: 20px;">
