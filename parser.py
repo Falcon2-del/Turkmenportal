@@ -18,13 +18,13 @@ URLS = {
     "tm": "https://turkmenportal.com/tm/news",
 }
 
-# Файлы для хранения ID последней обработанной новости (чтобы не спамить)
 DB_FILES = {"ru": "last_id_ru.txt", "tm": "last_id_tm.txt"}
 
 
 def get_last_saved_id(lang):
     if os.path.exists(DB_FILES[lang]):
-        with open(DB_FILES[lang], "24r") as f:
+        # Исправлено: "24r" заменено на стандартный "r"
+        with open(DB_FILES[lang], "r") as f:
             try:
                 return int(f.read().strip())
             except ValueError:
@@ -61,23 +61,47 @@ def send_email(subject, body_html):
 
 
 def parse_article(url):
-    """Парсит содержимое конкретной статьи"""
+    """Парсит заголовок и тело статьи с Turkmenportal"""
     try:
-        response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        # Добавили полноценные заголовки, чтобы сайт отдавал корректную верстку
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
+        }
+        response = requests.get(url, headers=headers)
         if response.status_code != 200:
+            print(f"Ошибка запроса к статье ({response.status_code}): {url}")
             return None
 
         soup = BeautifulSoup(response.text, "html.parser")
 
-        # Селекторы могут незначительно меняться, берем стандартный заголовок и текст
-        title = soup.find("h1")
-        title_text = title.text.strip() if title else "Без названия"
+        # 1. Поиск заголовка (пробуем класс single-title, затем любой h1, затем тег title)
+        title_tag = soup.find("h1", class_="single-title") or soup.find("h1")
+        if title_tag:
+            title_text = title_tag.text.strip()
+        else:
+            title_text = soup.title.text.replace("- Turkmenportal", "").strip() if soup.title else "Без названия"
 
-        # Ищем основной блок текста (на Turkmenportal это обычно класс .text-theme или .article-content)
-        content_div = soup.find("div", class_="article-content") or soup.find(
-            "div", class_="text-theme"
+        # 2. Поиск основного текста статьи
+        # На Turkmenportal контент обычно обернут в класс 'vul-content' или 'post-content'
+        content_div = (
+            soup.find("div", class_="vul-content") or 
+            soup.find("div", class_="post-content") or
+            soup.find("article")
         )
-        content_html = str(content_div) if content_div else "Не удалось распарсить текст."
+
+        if content_div:
+            # Очищаем от ненужных скриптов или рекламы, если они есть внутри
+            for s in content_div(["script", "style"]):
+                s.decompose()
+            content_html = str(content_div)
+        else:
+            # Если блок не найден, собираем все абзацы p, которые есть на странице (крайний случай)
+            paragraphs = soup.find_all("p")
+            if paragraphs:
+                content_html = "".join([str(p) for p in paragraphs if len(p.text.strip()) > 10])
+            else:
+                content_html = "Не удалось распарсить текст."
 
         return title_text, content_html
     except Exception as e:
@@ -86,38 +110,34 @@ def parse_article(url):
 
 
 def check_news():
-    # Для корректной работы сохранения состояния в GitHub Actions коммитить изменения обратно сложно,
-    # поэтому мы просто проверяем свежие новости за один запуск.
-    # Если вам нужна строгая история, лучше использовать GitHub Artifacts или внешнюю БД.
-    # В данном примере скрипт отправляет ТОП-3 свежих новостей, если они обновились.
-
     for lang, url in URLS.items():
         print(f"Проверка новостей для языка: {lang}...")
         try:
-            response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+            response = requests.get(url, headers=headers)
             if response.status_code != 200:
-                print(f"Не удалось получить доступ к {url}")
+                print(f"Не удалось получить доступ к ленте {url}")
                 continue
 
             soup = BeautifulSoup(response.text, "html.parser")
+            # Ищем все ссылки, содержащие паттерн новостей
             links = soup.find_all("a", href=re.compile(rf"/{lang}/news/\d+"))
 
             last_saved_id = get_last_saved_id(lang)
             new_max_id = last_saved_id
 
-            # Собираем уникальные ссылки на новости
             processed_urls = set()
             for link in links:
                 href = link["href"]
                 if not href.startswith("http"):
                     href = "https://turkmenportal.com" + href
 
-                # Извлекаем ID из ссылки
                 match = re.search(r"/news/(\d+)", href)
                 if match:
                     news_id = int(match.group(1))
 
-                    # Если новость новее, чем сохраненная (или это первый запуск)
                     if news_id > last_saved_id and href not in processed_urls:
                         processed_urls.add(href)
                         if news_id > new_max_id:
@@ -131,7 +151,7 @@ def check_news():
                             email_body = f"""
                             <h2><a href="{href}">{title}</a></h2>
                             <hr>
-                            {content}
+                            <div>{content}</div>
                             <br><br>
                             <small>Источник: {href}</small>
                             """
