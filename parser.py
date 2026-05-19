@@ -62,15 +62,25 @@ def send_email(subject, body_html):
 
 
 def format_to_custom_date(date_source):
-    """Возвращает дату в исходном формате сайта (GMT+5)"""
+    """Вспомогательная функция для приведения даты к формату ДД.ММ.ГГГГ ЧЧ:ММ:СС с сохранением GMT+5"""
     if not date_source:
         return None
-    # Возвращаем строку как есть, чтобы сохранить оригинальное время GMT+5 с сайта
-    return str(date_source).strip()
+    try:
+        if isinstance(date_source, str) and (date_source.endswith("GMT") or date_source.endswith("UTC")):
+            dt = datetime.strptime(date_source, "%a, %d %b %Y %H:%M:%S %Z")
+            return dt.strftime("%d.%m.%Y %H:%M:%S")
+        
+        if isinstance(date_source, datetime):
+            return date_source.strftime("%d.%m.%Y %H:%M:%S")
+            
+        dt = date_parser.parse(str(date_source))
+        return dt.strftime("%d.%m.%Y %H:%M:%S")
+    except Exception:
+        return str(date_source)
 
 
 def parse_article(url):
-    """Парсит заголовок, дату и оригинальное тело статьи с Turkmenportal"""
+    """Парсит заголовок, дату по 3+ источникам и оригинальное тело статьи с Turkmenportal"""
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -90,16 +100,27 @@ def parse_article(url):
         else:
             title_text = soup.title.text.replace("- Turkmenportal", "").strip() if soup.title else "Без названия"
 
-        # 2. Поиск даты публикации
+        # 2. Поиск даты публикации (Многоуровневый сбор из 3+ источников)
         raw_date = None
         time_tag = soup.find("time")
         if time_tag:
-            raw_date = time_tag.text.strip()
+            raw_date = time_tag.get("datetime") or time_tag.text.strip()
             
         if not raw_date:
             date_tag = soup.find(class_="vul-date") or soup.find(class_="date")
             if date_tag:
                 raw_date = date_tag.text.strip()
+            
+        if not raw_date:
+            meta_date = soup.find("meta", property="article:published_time") or soup.find("meta", itemprop="datePublished")
+            if meta_date and meta_date.get("content"):
+                raw_date = meta_date["content"]
+
+        if not raw_date:
+            raw_date = response.headers.get("Last-Modified") or response.headers.get("Date")
+
+        if not raw_date:
+            raw_date = datetime.now()
 
         date_text = format_to_custom_date(raw_date)
 
@@ -111,14 +132,16 @@ def parse_article(url):
         )
 
         if content_div:
-            # Вырезаем рекламу, виджеты и указанные вами параграфы афиш/статей
+            # Точечное удаление баннеров, скриптов, рекламных сеток и блоков афиш/статей
             unwanted_selectors = [
-                "script", "style", ".interesting-news", ".related-news", 
+                "script", "style", "iframe", ".interesting-news", ".related-news", 
                 ".share-blocks", ".tags-block", ".comments-block", 
                 "aside", ".read-also", ".banner", ".recommended-news",
                 "#recommended", ".post-recommendations", 
                 ".afisha-sidebar", ".article-sidebar", "[class*='afisha']", "[class*='article']",
-                "p.text-center.font-bold", "p.line-clamp-3"
+                ".adsbygoogle", '[id^="div-gpt-ad"]', '.adv-block',
+                "p.text-center.font-bold.text-xs.px-3.line-clamp-3",
+                "p.mt-24.text-center.font-bold.text-white.text-xs.px-3.line-clamp-3"
             ]
             for selector in unwanted_selectors:
                 for match in content_div.select(selector):
@@ -134,8 +157,7 @@ def parse_article(url):
                         real_src = "https://turkmenportal.com" + real_src
                     
                     img["src"] = real_src
-                    # Сброс ограничений для отображения картинок внутри письма
-                    img["style"] = "display: block; max-width: 100%; height: auto; margin: 10px auto;"
+                    img["style"] = "display: block; max-width: 100%; height: auto; margin: 15px auto;"
                     if img.get("loading"):
                         del img["loading"]
                     
@@ -192,7 +214,7 @@ def check_news():
                         if article_data:
                             title, date_str, content = article_data
                             
-                            # Письмо со стилями самого сайта для адаптивного отображения контента и фото
+                            # Письмо, сохраняющее исходную структуру и адаптивную разметку для текста и фото
                             email_body = f"""
                             <html>
                             <head>
