@@ -62,25 +62,14 @@ def send_email(subject, body_html):
 
 
 def format_to_custom_date(date_source):
-    """Вспомогательная функция для приведения даты к формату ДД.ММ.ГГГГ ЧЧ:ММ:СС с сохранением GMT+5"""
+    """Возвращает оригинальный текст даты с сайта (сохраняя родной GMT+5) без конвертации"""
     if not date_source:
-        return None
-    try:
-        if isinstance(date_source, str) and (date_source.endswith("GMT") or date_source.endswith("UTC")):
-            dt = datetime.strptime(date_source, "%a, %d %b %Y %H:%M:%S %Z")
-            return dt.strftime("%d.%m.%Y %H:%M:%S")
-        
-        if isinstance(date_source, datetime):
-            return date_source.strftime("%d.%m.%Y %H:%M:%S")
-            
-        dt = date_parser.parse(str(date_source))
-        return dt.strftime("%d.%m.%Y %H:%M:%S")
-    except Exception:
-        return str(date_source)
+        return "Не указана"
+    return str(date_source).strip()
 
 
 def parse_article(url):
-    """Парсит заголовок, дату по 3+ источникам и оригинальное тело статьи с Turkmenportal"""
+    """Парсит заголовок, дату по всем доступным источникам и оригинальное тело статьи с Turkmenportal"""
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -100,7 +89,7 @@ def parse_article(url):
         else:
             title_text = soup.title.text.replace("- Turkmenportal", "").strip() if soup.title else "Без названия"
 
-        # 2. Поиск даты публикации (Многоуровневый сбор из 3+ источников)
+        # 2. Поиск даты публикации по 3+ источникам (как в оригинале)
         raw_date = None
         time_tag = soup.find("time")
         if time_tag:
@@ -120,7 +109,7 @@ def parse_article(url):
             raw_date = response.headers.get("Last-Modified") or response.headers.get("Date")
 
         if not raw_date:
-            raw_date = datetime.now()
+            raw_date = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
         date_text = format_to_custom_date(raw_date)
 
@@ -132,14 +121,14 @@ def parse_article(url):
         )
 
         if content_div:
-            # Точечное удаление баннеров, скриптов, рекламных сеток и блоков афиш/статей
+            # Точечная зачистка рекламы, баннеров сторонних сетей и блоков афиш/статей
             unwanted_selectors = [
                 "script", "style", "iframe", ".interesting-news", ".related-news", 
                 ".share-blocks", ".tags-block", ".comments-block", 
                 "aside", ".read-also", ".banner", ".recommended-news",
                 "#recommended", ".post-recommendations", 
                 ".afisha-sidebar", ".article-sidebar", "[class*='afisha']", "[class*='article']",
-                ".adsbygoogle", '[id^="div-gpt-ad"]', '.adv-block',
+                ".adsbygoogle", '[id^="div-gpt-ad"]', '.adv-block', '.banner-block',
                 "p.text-center.font-bold.text-xs.px-3.line-clamp-3",
                 "p.mt-24.text-center.font-bold.text-white.text-xs.px-3.line-clamp-3"
             ]
@@ -147,7 +136,7 @@ def parse_article(url):
                 for match in content_div.select(selector):
                     match.decompose()
             
-            # Корректная обработка изображений (Lazy Loading + Абсолютные ссылки)
+            # Обработка картинок (Lazy Loading + Абсолютные ссылки)
             for img in content_div.find_all("img"):
                 real_src = img.get("data-src") or img.get("data-original") or img.get("src")
                 
@@ -214,7 +203,7 @@ def check_news():
                         if article_data:
                             title, date_str, content = article_data
                             
-                            # Письмо, сохраняющее исходную структуру и адаптивную разметку для текста и фото
+                            # Письмо в формате HTML, сохраняющее исходный стиль статьи
                             email_body = f"""
                             <html>
                             <head>
