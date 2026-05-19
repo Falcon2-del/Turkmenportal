@@ -66,25 +66,21 @@ def format_to_custom_date(date_source):
     if not date_source:
         return None
     try:
-        # Если это строка из заголовков HTTP сервера (RFC 1123)
         if isinstance(date_source, str) and (date_source.endswith("GMT") or date_source.endswith("UTC")):
             dt = datetime.strptime(date_source, "%a, %d %b %Y %H:%M:%S %Z")
             return dt.strftime("%d.%m.%Y %H:%M:%S")
         
-        # Если это стандартный объект datetime
         if isinstance(date_source, datetime):
             return date_source.strftime("%d.%m.%Y %H:%M:%S")
             
-        # Для всех остальных текстовых форматов используем умный парсер
         dt = date_parser.parse(str(date_source))
         return dt.strftime("%d.%m.%Y %H:%M:%S")
     except Exception:
-        # Если не получилось распарсить сложный текстовый формат, возвращаем как есть
         return str(date_source)
 
 
 def parse_article(url):
-    """Парсит заголовок, дату и тело статьи с Turkmenportal"""
+    """Парсит заголовок, дату и оригинальное тело статьи с Turkmenportal"""
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -104,10 +100,8 @@ def parse_article(url):
         else:
             title_text = soup.title.text.replace("- Turkmenportal", "").strip() if soup.title else "Без названия"
 
-        # 2. Поиск даты публикации с автоматическим переформатированием
+        # 2. Поиск даты публикации
         raw_date = None
-        
-        # Вариант А: Стандартные теги верстки (внутри тега time часто лежит аттрибут datetime)
         time_tag = soup.find("time")
         if time_tag:
             raw_date = time_tag.get("datetime") or time_tag.text.strip()
@@ -117,21 +111,17 @@ def parse_article(url):
             if date_tag:
                 raw_date = date_tag.text.strip()
             
-        # Вариант Б: Мета-теги страницы
         if not raw_date:
             meta_date = soup.find("meta", property="article:published_time") or soup.find("meta", itemprop="datePublished")
             if meta_date and meta_date.get("content"):
                 raw_date = meta_date["content"]
 
-        # Вариант В: Заголовки HTTP-ответа сервера
         if not raw_date:
             raw_date = response.headers.get("Last-Modified") or response.headers.get("Date")
 
-        # Если совсем ничего не нашли — берем текущее время запуска
         if not raw_date:
             raw_date = datetime.now()
 
-        # Применяем форматирование ДД.ММ.ГГГГ ЧЧ:ММ:СС
         date_text = format_to_custom_date(raw_date)
 
         # 3. Поиск основного текста статьи
@@ -142,7 +132,7 @@ def parse_article(url):
         )
 
         if content_div:
-            # Полная очистка от скриптов, стилей, рекомендаций и рекламы
+            # Полная очистка от скриптов, блоков рекомендаций и рекламы
             unwanted_selectors = [
                 "script", "style", ".interesting-news", ".related-news", 
                 ".share-blocks", ".tags-block", ".comments-block", 
@@ -196,6 +186,10 @@ def check_news():
                 if not href.startswith("http"):
                     href = "https://turkmenportal.com" + href
 
+                # Исключаем разделы "Афиша" (afisha) и "Статьи" (article)
+                if "/afisha/" in href or "/article/" in href:
+                    continue
+
                 match = re.search(r"/news/(\d+)", href)
                 if match:
                     news_id = int(match.group(1))
@@ -211,7 +205,7 @@ def check_news():
                         if article_data:
                             title, date_str, content = article_data
                             
-                            # Тело письма
+                            # Тело письма с сохранением исходного стиля отображения сайта
                             email_body = f"""
                             <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
                                 <p style="color: #777; font-size: 14px; margin-bottom: 20px;">
@@ -219,7 +213,7 @@ def check_news():
                                 </p>
                                 <h2><a href="{href}" style="color: #0056b3; text-decoration: none;">{title}</a></h2>
                                 <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
-                                <div>{content}</div>
+                                {content}
                                 <br><br>
                                 <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
                                 <small style="color: #999;">Источник: <a href="{href}">{href}</a></small>
