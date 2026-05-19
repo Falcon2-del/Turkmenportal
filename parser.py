@@ -132,21 +132,34 @@ def parse_article(url):
         )
 
         if content_div:
-            # Полная очистка от скриптов, блоков рекомендаций и рекламы
+            # Расширенный список селекторов для вырезания рекламы, блоков «Афиша», «Статьи» и виджетов
             unwanted_selectors = [
                 "script", "style", ".interesting-news", ".related-news", 
                 ".share-blocks", ".tags-block", ".comments-block", 
                 "aside", ".read-also", ".banner", ".recommended-news",
-                "#recommended", ".post-recommendations"
+                "#recommended", ".post-recommendations", 
+                ".afisha-sidebar", ".article-sidebar", "[class*='afisha']", "[class*='article']"
             ]
             for selector in unwanted_selectors:
                 for match in content_div.select(selector):
                     match.decompose()
             
-            # Делаем ссылки на картинки абсолютными
+            # РЕШЕНИЕ ПРОБЛЕМЫ С ФОТО (Lazy Loading + Абсолютные ссылки)
             for img in content_div.find_all("img"):
-                if img.get("src") and not img["src"].startswith("http"):
-                    img["src"] = "https://turkmenportal.com" + img["src"]
+                # Если у картинки есть дата-атрибут с реальным изображением, берем его
+                real_src = img.get("data-src") or img.get("data-original") or img.get("src")
+                
+                if real_src:
+                    real_src = real_src.strip()
+                    if not real_src.startswith("http"):
+                        real_src = "https://turkmenportal.com" + real_src
+                    
+                    # Принудительно пишем правильный путь в src и убираем ленивую загрузку
+                    img["src"] = real_src
+                    if img.get("style"):
+                        img["style"] = img["style"] + "; display: block; max-width: 100%; height: auto;"
+                    else:
+                        img["style"] = "display: block; max-width: 100%; height: auto;"
                     
             content_html = str(content_div)
         else:
@@ -186,10 +199,6 @@ def check_news():
                 if not href.startswith("http"):
                     href = "https://turkmenportal.com" + href
 
-                # Исключаем разделы "Афиша" (afisha) и "Статьи" (article)
-                if "/afisha/" in href or "/article/" in href:
-                    continue
-
                 match = re.search(r"/news/(\d+)", href)
                 if match:
                     news_id = int(match.group(1))
@@ -205,15 +214,17 @@ def check_news():
                         if article_data:
                             title, date_str, content = article_data
                             
-                            # Тело письма с сохранением исходного стиля отображения сайта
+                            # Тело письма, повторяющее стили сайта + адаптивность для картинок
                             email_body = f"""
-                            <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
+                            <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6; max-width: 800px; margin: 0 auto;">
                                 <p style="color: #777; font-size: 14px; margin-bottom: 20px;">
                                     <strong>Дата публикации:</strong> {date_str}
                                 </p>
                                 <h2><a href="{href}" style="color: #0056b3; text-decoration: none;">{title}</a></h2>
                                 <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
-                                {content}
+                                <div class="web-content-body">
+                                    {content}
+                                </div>
                                 <br><br>
                                 <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
                                 <small style="color: #999;">Источник: <a href="{href}">{href}</a></small>
