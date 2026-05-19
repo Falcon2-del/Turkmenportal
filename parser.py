@@ -121,14 +121,17 @@ def parse_article(url):
         )
 
         if content_div:
-            # Точечная зачистка рекламы, баннеров сторонних сетей и блоков афиш/статей
+            # Жёсткая зачистка всех видов баннеров, рекламы и блоков афиш
             unwanted_selectors = [
-                "script", "style", "iframe", ".interesting-news", ".related-news", 
-                ".share-blocks", ".tags-block", ".comments-block", 
-                "aside", ".read-also", ".banner", ".recommended-news",
-                "#recommended", ".post-recommendations", 
+                "script", "style", "iframe", "noscript",
+                ".interesting-news", ".related-news", ".share-blocks", ".tags-block", ".comments-block", 
+                "aside", ".read-also", ".recommended-news", "#recommended", ".post-recommendations", 
                 ".afisha-sidebar", ".article-sidebar", "[class*='afisha']", "[class*='article']",
-                ".adsbygoogle", '[id^="div-gpt-ad"]', '.adv-block', '.banner-block',
+                # Селекторы баннеров и рекламы (Яндекс, Google, Adblock-триггеры)
+                ".banner", ".banner-block", ".adv-block", ".adv", ".advertising",
+                ".adsbygoogle", '[id^="div-gpt-ad"]', '[class*="yandex"]', '[id^="yandex"]',
+                '[class*="banner"]', '[id*="banner"]', '.reklama', '.pub-block',
+                # Специфические параграфы афиш и анонсов статей из вашего примера
                 "p.text-center.font-bold.text-xs.px-3.line-clamp-3",
                 "p.mt-24.text-center.font-bold.text-white.text-xs.px-3.line-clamp-3"
             ]
