@@ -62,21 +62,11 @@ def send_email(subject, body_html):
 
 
 def format_to_custom_date(date_source):
-    """Вспомогательная функция для приведения даты к формату ДД.ММ.ГГГГ ЧЧ:ММ:СС"""
+    """Возвращает дату в исходном формате сайта (GMT+5)"""
     if not date_source:
         return None
-    try:
-        if isinstance(date_source, str) and (date_source.endswith("GMT") or date_source.endswith("UTC")):
-            dt = datetime.strptime(date_source, "%a, %d %b %Y %H:%M:%S %Z")
-            return dt.strftime("%d.%m.%Y %H:%M:%S")
-        
-        if isinstance(date_source, datetime):
-            return date_source.strftime("%d.%m.%Y %H:%M:%S")
-            
-        dt = date_parser.parse(str(date_source))
-        return dt.strftime("%d.%m.%Y %H:%M:%S")
-    except Exception:
-        return str(date_source)
+    # Возвращаем строку как есть, чтобы сохранить оригинальное время GMT+5 с сайта
+    return str(date_source).strip()
 
 
 def parse_article(url):
@@ -104,23 +94,12 @@ def parse_article(url):
         raw_date = None
         time_tag = soup.find("time")
         if time_tag:
-            raw_date = time_tag.get("datetime") or time_tag.text.strip()
+            raw_date = time_tag.text.strip()
             
         if not raw_date:
             date_tag = soup.find(class_="vul-date") or soup.find(class_="date")
             if date_tag:
                 raw_date = date_tag.text.strip()
-            
-        if not raw_date:
-            meta_date = soup.find("meta", property="article:published_time") or soup.find("meta", itemprop="datePublished")
-            if meta_date and meta_date.get("content"):
-                raw_date = meta_date["content"]
-
-        if not raw_date:
-            raw_date = response.headers.get("Last-Modified") or response.headers.get("Date")
-
-        if not raw_date:
-            raw_date = datetime.now()
 
         date_text = format_to_custom_date(raw_date)
 
@@ -132,21 +111,21 @@ def parse_article(url):
         )
 
         if content_div:
-            # Расширенный список селекторов для вырезания рекламы, блоков «Афиша», «Статьи» и виджетов
+            # Вырезаем рекламу, виджеты и указанные вами параграфы афиш/статей
             unwanted_selectors = [
                 "script", "style", ".interesting-news", ".related-news", 
                 ".share-blocks", ".tags-block", ".comments-block", 
                 "aside", ".read-also", ".banner", ".recommended-news",
                 "#recommended", ".post-recommendations", 
-                ".afisha-sidebar", ".article-sidebar", "[class*='afisha']", "[class*='article']"
+                ".afisha-sidebar", ".article-sidebar", "[class*='afisha']", "[class*='article']",
+                "p.text-center.font-bold", "p.line-clamp-3"
             ]
             for selector in unwanted_selectors:
                 for match in content_div.select(selector):
                     match.decompose()
             
-            # РЕШЕНИЕ ПРОБЛЕМЫ С ФОТО (Lazy Loading + Абсолютные ссылки)
+            # Корректная обработка изображений (Lazy Loading + Абсолютные ссылки)
             for img in content_div.find_all("img"):
-                # Если у картинки есть дата-атрибут с реальным изображением, берем его
                 real_src = img.get("data-src") or img.get("data-original") or img.get("src")
                 
                 if real_src:
@@ -154,12 +133,11 @@ def parse_article(url):
                     if not real_src.startswith("http"):
                         real_src = "https://turkmenportal.com" + real_src
                     
-                    # Принудительно пишем правильный путь в src и убираем ленивую загрузку
                     img["src"] = real_src
-                    if img.get("style"):
-                        img["style"] = img["style"] + "; display: block; max-width: 100%; height: auto;"
-                    else:
-                        img["style"] = "display: block; max-width: 100%; height: auto;"
+                    # Сброс ограничений для отображения картинок внутри письма
+                    img["style"] = "display: block; max-width: 100%; height: auto; margin: 10px auto;"
+                    if img.get("loading"):
+                        del img["loading"]
                     
             content_html = str(content_div)
         else:
@@ -214,21 +192,35 @@ def check_news():
                         if article_data:
                             title, date_str, content = article_data
                             
-                            # Тело письма, повторяющее стили сайта + адаптивность для картинок
+                            # Письмо со стилями самого сайта для адаптивного отображения контента и фото
                             email_body = f"""
-                            <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6; max-width: 800px; margin: 0 auto;">
-                                <p style="color: #777; font-size: 14px; margin-bottom: 20px;">
-                                    <strong>Дата публикации:</strong> {date_str}
-                                </p>
-                                <h2><a href="{href}" style="color: #0056b3; text-decoration: none;">{title}</a></h2>
-                                <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
-                                <div class="web-content-body">
-                                    {content}
+                            <html>
+                            <head>
+                                <style>
+                                    body {{ font-family: Arial, sans-serif; color: #333; line-height: 1.6; background-color: #fff; margin: 0; padding: 20px; }}
+                                    .container {{ max-width: 800px; margin: 0 auto; }}
+                                    .meta {{ color: #777; font-size: 14px; margin-bottom: 20px; }}
+                                    .title {{ color: #0056b3; text-decoration: none; }}
+                                    .content-body img {{ max-width: 100% !important; height: auto !important; display: block; margin: 15px auto; }}
+                                    .content-body p {{ margin-bottom: 15px; text-align: justify; }}
+                                </style>
+                            </head>
+                            <body>
+                                <div class="container">
+                                    <p class="meta">
+                                        <strong>Дата публикации:</strong> {date_str}
+                                    </p>
+                                    <h2><a href="{href}" class="title">{title}</a></h2>
+                                    <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+                                    <div class="content-body">
+                                        {content}
+                                    </div>
+                                    <br><br>
+                                    <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+                                    <small style="color: #999;">Источник: <a href="{href}">{href}</a></small>
                                 </div>
-                                <br><br>
-                                <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
-                                <small style="color: #999;">Источник: <a href="{href}">{href}</a></small>
-                            </div>
+                            </body>
+                            </html>
                             """
                             
                             send_email("Turkmenportal", email_body)
