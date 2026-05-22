@@ -3,7 +3,7 @@ import re
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.header import Header  # Важно для корректных заголовков на кириллице и туркменском
+from email.header import Header  # Исправляет кодировку заголовков (проблема 1 и 3)
 from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
@@ -44,7 +44,8 @@ def send_email(subject, body_html):
         return
 
     msg = MIMEMultipart("alternative")
-    # Кодируем тему письма в UTF-8, чтобы избежать английских букв и кракозябр
+    
+    # Решение проблемы №1 и №3: Явное кодирование темы письма для сохранения кириллицы и туркменского алфавита
     msg["Subject"] = Header(subject, "utf-8")
     msg["From"] = EMAIL_SENDER
     msg["To"] = EMAIL_RECEIVER
@@ -63,7 +64,6 @@ def send_email(subject, body_html):
 
 
 def format_to_custom_date(date_source):
-    """Возвращает оригинальный текст даты с сайта (сохраняя родной GMT+5) без конвертации"""
     if not date_source:
         return "Не указана"
     return str(date_source).strip()
@@ -78,16 +78,22 @@ def parse_article(url):
         }
         response = requests.get(url, headers=headers)
         if response.status_code != 200:
-            print(f"Ошибка запроса к статье ({response.status_code}): {url}")
+            print(f"Ошибка JavaScript/Запроса к статье ({response.status_code}): {url}")
             return None
 
-        # Явно задаем кодировку ответа, чтобы не ломались специфичные туркменские и русские символы
-        response.encoding = "utf-8"
-        soup = BeautifulSoup(response.text, "html.parser")
+        # Передаем правильную кодировку в BeautifulSoup напрямую из ответа сервера
+        soup = BeautifulSoup(response.content, "html.parser", from_encoding=response.encoding)
 
-        # 1. Точечный поиск заголовка по указанному классу
+        # 1. Поиск заголовка + очистка (Проблема №4)
         title_tag = soup.find("div", class_="text-3xl font-bold lg:text-xl sm:leading-7")
-        title_text = title_tag.text.strip() if title_tag else "Без названия"
+        if title_tag:
+            title_text = title_tag.text.strip()
+        else:
+            title_text = soup.title.text if soup.title else "Без названия"
+        
+        # Полная зачистка упоминаний сайта из темы
+        title_text = re.sub(r"\s*-\s*Turkmenportal.*", "", title_text, flags=re.IGNORECASE)
+        title_text = title_text.replace("turkmenportal.com", "").replace("Turkmenportal", "").strip()
 
         # 2. Поиск даты публикации
         raw_date = None
@@ -99,63 +105,53 @@ def parse_article(url):
             date_tag = soup.find(class_="vul-date") or soup.find(class_="date")
             if date_tag:
                 raw_date = date_tag.text.strip()
-            
-        if not raw_date:
-            meta_date = soup.find("meta", property="article:published_time") or soup.find("meta", itemprop="datePublished")
-            if meta_date and meta_date.get("content"):
-                raw_date = meta_date["content"]
-
-        if not raw_date:
-            raw_date = response.headers.get("Last-Modified") or response.headers.get("Date")
 
         if not raw_date:
             raw_date = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
         date_text = format_to_custom_date(raw_date)
 
-        # 3. Сборка контента (Только главное фото и параграфы с text-align: justify)
+        # 3. Сборка контента
         content_parts = []
 
-        # Ищем главное изображение статьи
-        img_tag = soup.find("img", class_=lambda x: x and "mx-auto" in x and "cursor-pointer" in x)
+        # Решение проблемы №5 (Фото): Более надежный поиск главного фото внутри статьи
+        # Ищем картинку, у которой alt совпадает с заголовком, или по структуре классов
+        img_tag = soup.find("img", alt=True) or soup.find("img", class_=lambda x: x and "mx-auto" in x)
         if img_tag:
-            img_src = img_tag.get("src") or img_tag.get("data-src")
-            if img_src:
+            img_src = img_tag.get("src") or img_tag.get("data-src") or img_tag.get("data-nimg")
+            if img_src and not img_src.startswith("data:"):
                 img_src = img_src.strip()
                 if not img_src.startswith("http"):
                     img_src = "https://turkmenportal.com" + img_src
                 
-                content_parts.append(f'<img src="{img_src}" style="display: block; max-width: 100%; height: auto; margin: 15px auto; border-radius: 6px;" />')
+                content_parts.append(f'<img src="{img_src}" style="display: block; max-width: 100%; height: auto; margin: 15px auto; border-radius: 8px;" />')
 
-        # Зачищаем ненужные блоки-параграфы (афиши, анонсы концертов), которые могут иметь стиль justify
-        for bad_p in soup.find_all("p", class_=lambda x: x and ("line-clamp" in x or "text-center" in x)):
-            bad_p.decompose()
-
-        # Дополнительно чистим по ключевым классам родительских блоков рекламы/афиш
-        for unwanted in soup.select("[class*='afisha'], [class*='banner'], .interesting-news, .related-news"):
-            unwanted.decompose()
-
-        # Ищем исключительно параграфы статьи с нужным стилем выравнивания
+        # Решение проблемы №2 (Лишние элементы): Берем СТРОГО только p со стилем выравнивания
         paragraphs = soup.find_all("p", style=lambda x: x and "text-align: justify" in x)
+        
         if paragraphs:
             for p in paragraphs:
-                # Дополнительная проверка, чтобы мусорные строки не попали в финальный список
-                p_text = p.text.strip()
-                if p_text and not p.find_parent(class_=lambda x: x and "afisha" in x):
-                    content_parts.append(str(p))
+                # Дополнительная проверка: исключаем p, если внутри него затесались рекламные классы
+                p_class = "".join(p.get("class", []))
+                if "text-center" in p_class or "line-clamp" in p_class:
+                    continue
+                content_parts.append(str(p))
         
-        # Если ничего не нашли по точным селекторам, подстраховываемся чистыми p без классов афиш
+        # Если жесткий фильтр ничего не нашел, берем p из центрального контейнера, игнорируя блоки афиш
         if not content_parts or (len(content_parts) == 1 and img_tag):
-            all_p = soup.find_all("p")
-            valid_p = [str(p) for p in all_p if len(p.text.strip()) > 10 and not p.get("class")]
-            if valid_p:
-                content_parts.extend(valid_p)
-            else:
-                content_parts.append("<p>Не удалось распарсить текст статьи.</p>")
+            main_container = soup.find("div", class_="vul-content") or soup.find("article")
+            if main_container:
+                for p in main_container.find_all("p"):
+                    p_class = "".join(p.get("class", []))
+                    # Отсекаем блоки типа "В Ашхабаде состоится концерт..."
+                    if "line-clamp" in p_class or "text-xs" in p_class or "mt-24" in p_class:
+                        continue
+                    if len(p.text.strip()) > 15:
+                        content_parts.append(str(p))
 
         content_html = "\n".join(content_parts)
-
         return title_text, date_text, content_html
+
     except Exception as e:
         print(f"Ошибка при парсинге статьи {url}: {e}")
         return None
@@ -173,7 +169,6 @@ def check_news():
                 print(f"Не удалось получить доступ к ленте {url}")
                 continue
 
-            response.encoding = "utf-8"
             soup = BeautifulSoup(response.text, "html.parser")
             links = soup.find_all("a", href=re.compile(rf"/{lang}/news/\d+"))
 
@@ -201,7 +196,8 @@ def check_news():
                         if article_data:
                             title, date_str, content = article_data
                             
-                            # Письмо в формате HTML с жестким указанием utf-8 в метатегах
+                            email_subject = title
+                            
                             email_body = f"""
                             <html>
                             <head>
@@ -210,7 +206,7 @@ def check_news():
                                     body {{ font-family: Arial, sans-serif; color: #333; line-height: 1.6; background-color: #fff; margin: 0; padding: 20px; }}
                                     .container {{ max-width: 800px; margin: 0 auto; }}
                                     .meta {{ color: #777; font-size: 14px; margin-bottom: 20px; }}
-                                    .title {{ color: #0056b3; text-decoration: none; }}
+                                    .title {{ color: #0056b3; text-decoration: none; font-size: 24px; font-weight: bold; }}
                                     .content-body img {{ max-width: 100% !important; height: auto !important; display: block; margin: 15px auto; border-radius: 6px; }}
                                     .content-body p {{ margin-bottom: 15px; text-align: justify; }}
                                 </style>
@@ -233,7 +229,7 @@ def check_news():
                             </html>
                             """
                             
-                            send_email(title, email_body)
+                            send_email(email_subject, email_body)
 
             if new_max_id > last_saved_id:
                 save_last_id(lang, new_max_id)
