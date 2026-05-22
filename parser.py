@@ -3,6 +3,7 @@ import re
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.header import Header  # Важно для корректных заголовков на кириллице и туркменском
 from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
@@ -43,7 +44,8 @@ def send_email(subject, body_html):
         return
 
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
+    # Кодируем тему письма в UTF-8, чтобы избежать английских букв и кракозябр
+    msg["Subject"] = Header(subject, "utf-8")
     msg["From"] = EMAIL_SENDER
     msg["To"] = EMAIL_RECEIVER
 
@@ -79,6 +81,8 @@ def parse_article(url):
             print(f"Ошибка запроса к статье ({response.status_code}): {url}")
             return None
 
+        # Явно задаем кодировку ответа, чтобы не ломались специфичные туркменские и русские символы
+        response.encoding = "utf-8"
         soup = BeautifulSoup(response.text, "html.parser")
 
         # 1. Точечный поиск заголовка по указанному классу
@@ -115,27 +119,37 @@ def parse_article(url):
         # Ищем главное изображение статьи
         img_tag = soup.find("img", class_=lambda x: x and "mx-auto" in x and "cursor-pointer" in x)
         if img_tag:
-            # Защита от lazy-loading (берем src, если data-src нет)
             img_src = img_tag.get("src") or img_tag.get("data-src")
             if img_src:
                 img_src = img_src.strip()
                 if not img_src.startswith("http"):
                     img_src = "https://turkmenportal.com" + img_src
                 
-                # Добавляем изображение в будущую верстку письма
-                content_parts.append(f'<img src="{img_src}" style="display: block; max-width: 100%; height: auto; margin: 15px auto; rounded-md" />')
+                content_parts.append(f'<img src="{img_src}" style="display: block; max-width: 100%; height: auto; margin: 15px auto; border-radius: 6px;" />')
+
+        # Зачищаем ненужные блоки-параграфы (афиши, анонсы концертов), которые могут иметь стиль justify
+        for bad_p in soup.find_all("p", class_=lambda x: x and ("line-clamp" in x or "text-center" in x)):
+            bad_p.decompose()
+
+        # Дополнительно чистим по ключевым классам родительских блоков рекламы/афиш
+        for unwanted in soup.select("[class*='afisha'], [class*='banner'], .interesting-news, .related-news"):
+            unwanted.decompose()
 
         # Ищем исключительно параграфы статьи с нужным стилем выравнивания
         paragraphs = soup.find_all("p", style=lambda x: x and "text-align: justify" in x)
         if paragraphs:
             for p in paragraphs:
-                content_parts.append(str(p))
+                # Дополнительная проверка, чтобы мусорные строки не попали в финальный список
+                p_text = p.text.strip()
+                if p_text and not p.find_parent(class_=lambda x: x and "afisha" in x):
+                    content_parts.append(str(p))
         
-        # Если ничего не нашли по точным селекторам, подстраховываемся обычными p
-        if not paragraphs:
+        # Если ничего не нашли по точным селекторам, подстраховываемся чистыми p без классов афиш
+        if not content_parts or (len(content_parts) == 1 and img_tag):
             all_p = soup.find_all("p")
-            if all_p:
-                content_parts.append("".join([str(p) for p in all_p if len(p.text.strip()) > 10]))
+            valid_p = [str(p) for p in all_p if len(p.text.strip()) > 10 and not p.get("class")]
+            if valid_p:
+                content_parts.extend(valid_p)
             else:
                 content_parts.append("<p>Не удалось распарсить текст статьи.</p>")
 
@@ -159,6 +173,7 @@ def check_news():
                 print(f"Не удалось получить доступ к ленте {url}")
                 continue
 
+            response.encoding = "utf-8"
             soup = BeautifulSoup(response.text, "html.parser")
             links = soup.find_all("a", href=re.compile(rf"/{lang}/news/\d+"))
 
@@ -186,13 +201,11 @@ def check_news():
                         if article_data:
                             title, date_str, content = article_data
                             
-                            # Тема письма теперь содержит реальный заголовок статьи
-                            email_subject = title
-                            
-                            # Письмо в формате HTML
+                            # Письмо в формате HTML с жестким указанием utf-8 в метатегах
                             email_body = f"""
                             <html>
                             <head>
+                                <meta charset="utf-8">
                                 <style>
                                     body {{ font-family: Arial, sans-serif; color: #333; line-height: 1.6; background-color: #fff; margin: 0; padding: 20px; }}
                                     .container {{ max-width: 800px; margin: 0 auto; }}
@@ -220,7 +233,7 @@ def check_news():
                             </html>
                             """
                             
-                            send_email(email_subject, email_body)
+                            send_email(title, email_body)
 
             if new_max_id > last_saved_id:
                 save_last_id(lang, new_max_id)
