@@ -44,7 +44,7 @@ def send_email(subject, body_html):
         return
 
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = Header("Türkmenportal", "utf-8")
+    msg["Subject"] = Header(subject, "utf-8")
     msg["From"] = EMAIL_SENDER
     msg["To"] = EMAIL_RECEIVER
 
@@ -61,37 +61,8 @@ def send_email(subject, body_html):
         print(f"Ошибка отправки почты: {e}")
 
 
-def clean_img_url(img_tag):
-    """Вспомогательная функция для извлечения реального URL картинки из Lazy Load атрибутов"""
-    if not img_tag:
-        return None
-    
-    src = (
-        img_tag.get("data-src") or 
-        img_tag.get("data-original") or 
-        img_tag.get("srcset") or 
-        img_tag.get("src")
-    )
-    
-    if not src or src.startswith("data:"):
-        return None
-        
-    src = src.split()[0].strip()
-    
-    if not src.startswith("http"):
-        src = "https://turkmenportal.com" + src
-
-    filename = src.split("/")[-1].lower()
-    
-    if "uploads" not in src.lower():
-        if any(x in filename for x in ["icon", "eye", "search", "zoom", "loader", "avatar"]):
-            return None
-
-    return src
-
-
 def parse_article(url):
-    """Парсит заголовок, дату, обложку и сохраняет хронологию 'текст + картинки'"""
+    """Парсит заголовок, дату и всё содержимое из id='content'"""
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -126,49 +97,36 @@ def parse_article(url):
         if not raw_date:
             raw_date = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
-        # 3. Сборка контента (Обложка + Тело статьи из div id="content")
+        # 3. Сборка контента строго из главного контейнера id="content"
         content_parts = []
-        html_images_seen = set()
-
-        # Поиск главной титульной картинки по её уникальным признакам
-        cover_tag = soup.find("img", class_=lambda x: x and "mx-auto" in x, width="500", height="300")
-        if not cover_tag:
-            cover_tag = soup.find("img", class_=lambda x: x and "mx-auto" in x)
-
-        if cover_tag:
-            cover_url = clean_img_url(cover_tag)
-            if cover_url:
-                content_parts.append(f'<img src="{cover_url}" style="display: block; max-width: 100%; height: auto; margin: 0 auto 20px auto; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);" />')
-                html_images_seen.add(cover_url)
-
-        # Целевой контейнер статьи по предоставленному шаблону
         main_container = soup.find("div", id="content")
-        
-        # Если id="content" не найден, используем запасные варианты классов
-        if not main_container:
-            main_container = soup.find("div", class_="vul-content") or soup.find("article")
 
         if main_container:
-            # Перебираем элементы непосредственные потомки (recursive=False), чтобы сохранить хронологию p и span с картинками
-            for element in main_container.find_all(recursive=False):
+            # Идем по всем элементам внутри контейнера по порядку их появления
+            for element in main_container.find_all(True, recursive=False):
+                
+                # Если это обычный абзац текста
                 if element.name == "p":
                     text_content = element.text.strip()
-                    if len(text_content) > 2:
-                        # Сохраняем абзац
-                        content_parts.append(f'<p style="margin-bottom: 15px; text-align: justify;">{text_content}</p>')
+                    if text_content:
+                        content_parts.append(f'<p style="margin-bottom: 15px; text-align: justify; font-size: 16px;">{text_content}</p>')
                 
-                # На сайте картинки лежат внутри блоков span (data-photo-preview-root)
+                # Если это блок с картинкой (в твоем примере это span или любой другой оберточный тег)
                 else:
-                    # Ищем картинку внутри текущего блока (будь то span или div)
                     img_tag = element.find("img") if element.name != "img" else element
                     if img_tag:
-                        img_url = clean_img_url(img_tag)
-                        if img_url and img_url not in html_images_seen:
-                            html_images_seen.add(img_url)
-                            content_parts.append(f'<img src="{img_url}" style="display: block; max-width: 100%; height: auto; margin: 15px auto; border-radius: 6px;" />')
+                        src = img_tag.get("src")
+                        if src and not src.startswith("data:"):
+                            # Строим абсолютный путь к картинке
+                            if not src.startswith("http"):
+                                src = "https://turkmenportal.com" + src
+                            
+                            # Пропускаем только заведомый мусор, картинки из uploads пройдут на 100%
+                            if not any(x in src.lower() for x in ["icon", "eye", "avatar", "loader"]):
+                                content_parts.append(f'<div style="text-align: center; margin: 20px 0;"><img src="{src}" style="max-width: 100%; height: auto; border-radius: 6px; display: inline-block;" /></div>')
 
-        # Финальный критический резерв (если вообще ничего не собралось)
-        if not content_parts or (len(content_parts) == 1 and cover_tag):
+        # Если id="content" не отработал (запасной вариант на случай изменений)
+        if not content_parts:
             paragraphs = soup.find_all("p", style=lambda x: x and "text-align: justify" in x)
             for p in paragraphs:
                 if len(p.text.strip()) > 10:
@@ -230,8 +188,6 @@ def check_news():
                                     .container {{ max-width: 800px; margin: 0 auto; }}
                                     .meta {{ color: #777; font-size: 14px; margin-bottom: 20px; }}
                                     .title {{ color: #0056b3; text-decoration: none; font-size: 24px; font-weight: bold; line-height: 1.3; }}
-                                    .content-body img {{ max-width: 100% !important; height: auto !important; display: block; margin: 15px auto; border-radius: 6px; }}
-                                    .content-body p {{ margin-bottom: 15px; text-align: justify; }}
                                 </style>
                             </head>
                             <body>
