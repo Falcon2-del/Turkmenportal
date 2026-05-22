@@ -81,10 +81,8 @@ def clean_img_url(img_tag):
     if not src.startswith("http"):
         src = "https://turkmenportal.com" + src
 
-    # Выделяем имя файла из конца ссылки, чтобы хэш-код в середине пути не триггерил фильтр
     filename = src.split("/")[-1].lower()
     
-    # Фильтруем только реальные системные иконки, игнорируя папку uploads
     if "uploads" not in src.lower():
         if any(x in filename for x in ["icon", "eye", "search", "zoom", "loader", "avatar"]):
             return None
@@ -128,33 +126,31 @@ def parse_article(url):
         if not raw_date:
             raw_date = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
-        # 3. Сборка контента (Обложка + Тело статьи в правильном порядке)
+        # 3. Сборка контента (Обложка + Тело статьи)
         content_parts = []
         html_images_seen = set()
 
-        main_container = soup.find("div", class_="vul-content") or soup.find("article")
-
-        # Находим и выводим главную обложку статьи
-        cover_tag = None
-        if main_container:
-            cover_div = main_container.find("div", class_=lambda x: x and "scale-110" in x)
-            if cover_div:
-                cover_tag = cover_div.find("img")
-            
-            if not cover_tag:
-                cover_tag = main_container.find("img", class_=lambda x: x and "mx-auto" in x) or main_container.find("img")
+        # Поиск главной титульной картинки по её уникальным признакам (классы и атрибуты размера)
+        cover_tag = soup.find("img", class_=lambda x: x and "mx-auto" in x, width="500", height="300")
         
+        # Если по точным размерам не нашлось, ищем по классу mx-auto в верхней части страницы
+        if not cover_tag:
+            cover_tag = soup.find("img", class_=lambda x: x and "mx-auto" in x)
+
         if cover_tag:
             cover_url = clean_img_url(cover_tag)
             if cover_url:
                 content_parts.append(f'<img src="{cover_url}" style="display: block; max-width: 100%; height: auto; margin: 0 auto 20px auto; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);" />')
                 html_images_seen.add(cover_url)
 
-        # Парсим внутренности статьи строго по порядку тегов первого уровня в контейнере
+        # Контейнер содержимого статьи
+        main_container = soup.find("div", class_="vul-content") or soup.find("article")
+
         if main_container:
-            for element in main_container.find_all(["p", "img"]):
+            # Обходим все элементы внутри статьи рекурсивно
+            for element in main_container.find_all(True):
                 if element.name == "p":
-                    # Защита от дублирования текста, если внутри p есть другие теги
+                    # Проверяем, чтобы не обрабатывать один и тот же текст дважды, если есть вложенные теги
                     if element.find_parent("p"):
                         continue
                         
@@ -169,11 +165,12 @@ def parse_article(url):
                 
                 elif element.name == "img":
                     img_url = clean_img_url(element)
+                    # Если картинка валидна и это не дубликат титульного изображения
                     if img_url and img_url not in html_images_seen:
                         html_images_seen.add(img_url)
                         content_parts.append(f'<img src="{img_url}" style="display: block; max-width: 100%; height: auto; margin: 15px auto; border-radius: 6px;" />')
 
-        # Запасной вариант
+        # Запасной критический вариант сборки текста
         if not content_parts or (len(content_parts) == 1 and cover_tag):
             paragraphs = soup.find_all("p", style=lambda x: x and "text-align: justify" in x)
             for p in paragraphs:
