@@ -66,7 +66,6 @@ def clean_img_url(img_tag):
     if not img_tag:
         return None
     
-    # Извлекаем ссылку из возможных атрибутов ленивой загрузки
     src = (
         img_tag.get("data-src") or 
         img_tag.get("data-original") or 
@@ -77,15 +76,19 @@ def clean_img_url(img_tag):
     if not src or src.startswith("data:"):
         return None
         
-    # Если в srcset целая строка, берем первый адрес
     src = src.split()[0].strip()
     
-    # Фильтруем системные иконки, чтобы они не лезли вместо фото
-    if any(x in src.lower() for x in ["/icon", "eye", "search", "zoom", "loader", "avatar"]):
-        return None
-
     if not src.startswith("http"):
         src = "https://turkmenportal.com" + src
+
+    # Выделяем имя файла из конца ссылки, чтобы хэш-код в середине пути не триггерил фильтр
+    filename = src.split("/")[-1].lower()
+    
+    # Фильтруем только реальные системные иконки, игнорируя папку uploads
+    if "uploads" not in src.lower():
+        if any(x in filename for x in ["icon", "eye", "search", "zoom", "loader", "avatar"]):
+            return None
+
     return src
 
 
@@ -129,18 +132,15 @@ def parse_article(url):
         content_parts = []
         html_images_seen = set()
 
-        # Находим контейнер всей статьи
         main_container = soup.find("div", class_="vul-content") or soup.find("article")
 
-        # Улучшенный поиск главной обложки (даже если она в обертке div со scale-110)
+        # Находим и выводим главную обложку статьи
         cover_tag = None
         if main_container:
-            # Сначала ищем картинку внутри характерных контейнеров обложки
             cover_div = main_container.find("div", class_=lambda x: x and "scale-110" in x)
             if cover_div:
                 cover_tag = cover_div.find("img")
             
-            # Если не нашли, ищем по старой схеме или просто первую картинку в статье
             if not cover_tag:
                 cover_tag = main_container.find("img", class_=lambda x: x and "mx-auto" in x) or main_container.find("img")
         
@@ -150,31 +150,30 @@ def parse_article(url):
                 content_parts.append(f'<img src="{cover_url}" style="display: block; max-width: 100%; height: auto; margin: 0 auto 20px auto; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);" />')
                 html_images_seen.add(cover_url)
 
-        # Парсим внутренности статьи: сохраняем перемешку текста и картинок по ходу их появления
+        # Парсим внутренности статьи строго по порядку тегов первого уровня в контейнере
         if main_container:
-            # Обходим все элементы подряд, чтобы сохранить точный порядок вёрстки сайта
-            for element in main_container.find_all(True):
-                # Если это абзац текста
+            for element in main_container.find_all(["p", "img"]):
                 if element.name == "p":
+                    # Защита от дублирования текста, если внутри p есть другие теги
+                    if element.find_parent("p"):
+                        continue
+                        
                     p_class = "".join(element.get("class", []))
                     if "line-clamp" in p_class or "text-xs" in p_class or "mt-24" in p_class:
                         continue
                     
                     text_content = element.text.strip()
-                    # Проверяем, чтобы это не был пустой абзац и внутри него не было обработано картинок
-                    if len(text_content) > 2 and element.parent.name != "p":
+                    if len(text_content) > 2:
                         style_attr = f' style="{element.get("style")}"' if element.get("style") else ''
                         content_parts.append(f'<p{style_attr}>{text_content}</p>')
                 
-                # Если встретили картинку (прямо или внутри вложенных span/div)
                 elif element.name == "img":
-                    # Проверяем, не является ли элемент частью уже обработанного блока (чтобы избежать дублей)
                     img_url = clean_img_url(element)
                     if img_url and img_url not in html_images_seen:
                         html_images_seen.add(img_url)
                         content_parts.append(f'<img src="{img_url}" style="display: block; max-width: 100%; height: auto; margin: 15px auto; border-radius: 6px;" />')
 
-        # Резервный вариант, если базовый разбор пуст
+        # Запасной вариант
         if not content_parts or (len(content_parts) == 1 and cover_tag):
             paragraphs = soup.find_all("p", style=lambda x: x and "text-align: justify" in x)
             for p in paragraphs:
