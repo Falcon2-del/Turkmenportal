@@ -77,10 +77,10 @@ def clean_img_url(img_tag):
     if not src or src.startswith("data:"):
         return None
         
-    # Если в srcset целая строка (например: "/img.jpg 1x, /img2.jpg 2x"), берем первый адрес
+    # Если в srcset целая строка, берем первый адрес
     src = src.split()[0].strip()
     
-    # Фильтруем системные иконки (лупы, просмотры, соцсети), чтобы они не лезли вместо фото
+    # Фильтруем системные иконки, чтобы они не лезли вместо фото
     if any(x in src.lower() for x in ["/icon", "eye", "search", "zoom", "loader", "avatar"]):
         return None
 
@@ -127,15 +127,22 @@ def parse_article(url):
 
         # 3. Сборка контента (Обложка + Тело статьи в правильном порядке)
         content_parts = []
-        html_images_seen = set()  # Чтобы не дублировать картинки, если они совпали с обложкой
+        html_images_seen = set()
 
         # Находим контейнер всей статьи
         main_container = soup.find("div", class_="vul-content") or soup.find("article")
 
-        # Пробуем найти главную обложку (обычно она идет первой в контейнере или имеет специальный класс)
+        # Улучшенный поиск главной обложки (даже если она в обертке div со scale-110)
         cover_tag = None
         if main_container:
-            cover_tag = main_container.find("img", class_=lambda x: x and "mx-auto" in x) or main_container.find("img")
+            # Сначала ищем картинку внутри характерных контейнеров обложки
+            cover_div = main_container.find("div", class_=lambda x: x and "scale-110" in x)
+            if cover_div:
+                cover_tag = cover_div.find("img")
+            
+            # Если не нашли, ищем по старой схеме или просто первую картинку в статье
+            if not cover_tag:
+                cover_tag = main_container.find("img", class_=lambda x: x and "mx-auto" in x) or main_container.find("img")
         
         if cover_tag:
             cover_url = clean_img_url(cover_tag)
@@ -145,27 +152,29 @@ def parse_article(url):
 
         # Парсим внутренности статьи: сохраняем перемешку текста и картинок по ходу их появления
         if main_container:
-            # Ищем прямых потомков: абзацы, блоки с картинками и т.д.
-            for element in main_container.find_all(["p", "img"]):
+            # Обходим все элементы подряд, чтобы сохранить точный порядок вёрстки сайта
+            for element in main_container.find_all(True):
+                # Если это абзац текста
                 if element.name == "p":
                     p_class = "".join(element.get("class", []))
-                    # Пропускаем служебный мусор, блоки рекламы и анонсов
                     if "line-clamp" in p_class or "text-xs" in p_class or "mt-24" in p_class:
                         continue
                     
                     text_content = element.text.strip()
-                    if len(text_content) > 2:
-                        # Сохраняем параграф с его исходными стилями выравнивания (например, justify)
+                    # Проверяем, чтобы это не был пустой абзац и внутри него не было обработано картинок
+                    if len(text_content) > 2 and element.parent.name != "p":
                         style_attr = f' style="{element.get("style")}"' if element.get("style") else ''
                         content_parts.append(f'<p{style_attr}>{text_content}</p>')
-                        
+                
+                # Если встретили картинку (прямо или внутри вложенных span/div)
                 elif element.name == "img":
+                    # Проверяем, не является ли элемент частью уже обработанного блока (чтобы избежать дублей)
                     img_url = clean_img_url(element)
                     if img_url and img_url not in html_images_seen:
                         html_images_seen.add(img_url)
                         content_parts.append(f'<img src="{img_url}" style="display: block; max-width: 100%; height: auto; margin: 15px auto; border-radius: 6px;" />')
 
-        # Если специфический разбор не дал результатов, собираем стандартные оправданные параграфы
+        # Резервный вариант, если базовый разбор пуст
         if not content_parts or (len(content_parts) == 1 and cover_tag):
             paragraphs = soup.find_all("p", style=lambda x: x and "text-align: justify" in x)
             for p in paragraphs:
