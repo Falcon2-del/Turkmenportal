@@ -6,7 +6,6 @@ from email.mime.text import MIMEText
 from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
-from dateutil import parser as date_parser
 
 # Настройки из GitHub Secrets
 EMAIL_SENDER = os.environ.get("EMAIL_SENDER")
@@ -69,7 +68,7 @@ def format_to_custom_date(date_source):
 
 
 def parse_article(url):
-    """Парсит заголовок, дату по всем доступным источникам и оригинальное тело статьи с Turkmenportal"""
+    """Парсит заголовок, дату, главное изображение и только нужные блоки текста статьи"""
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -82,14 +81,11 @@ def parse_article(url):
 
         soup = BeautifulSoup(response.text, "html.parser")
 
-        # 1. Поиск заголовка
-        title_tag = soup.find("h1", class_="single-title") or soup.find("h1")
-        if title_tag:
-            title_text = title_tag.text.strip()
-        else:
-            title_text = soup.title.text.replace("- Turkmenportal", "").strip() if soup.title else "Без названия"
+        # 1. Точечный поиск заголовка по указанному классу
+        title_tag = soup.find("div", class_="text-3xl font-bold lg:text-xl sm:leading-7")
+        title_text = title_tag.text.strip() if title_tag else "Без названия"
 
-        # 2. Поиск даты публикации по 3+ источникам (как в оригинале)
+        # 2. Поиск даты публикации
         raw_date = None
         time_tag = soup.find("time")
         if time_tag:
@@ -113,53 +109,37 @@ def parse_article(url):
 
         date_text = format_to_custom_date(raw_date)
 
-        # 3. Поиск основного текста статьи
-        content_div = (
-            soup.find("div", class_="vul-content") or 
-            soup.find("div", class_="post-content") or
-            soup.find("article")
-        )
+        # 3. Сборка контента (Только главное фото и параграфы с text-align: justify)
+        content_parts = []
 
-        if content_div:
-            # Жёсткая зачистка всех видов баннеров, рекламы и блоков афиш
-            unwanted_selectors = [
-                "script", "style", "iframe", "noscript",
-                ".interesting-news", ".related-news", ".share-blocks", ".tags-block", ".comments-block", 
-                "aside", ".read-also", ".recommended-news", "#recommended", ".post-recommendations", 
-                ".afisha-sidebar", ".article-sidebar", "[class*='afisha']", "[class*='article']",
-                # Селекторы баннеров и рекламы (Яндекс, Google, Adblock-триггеры)
-                ".banner", ".banner-block", ".adv-block", ".adv", ".advertising",
-                ".adsbygoogle", '[id^="div-gpt-ad"]', '[class*="yandex"]', '[id^="yandex"]',
-                '[class*="banner"]', '[id*="banner"]', '.reklama', '.pub-block',
-                # Специфические параграфы афиш и анонсов статей из вашего примера
-                "p.text-center.font-bold.text-xs.px-3.line-clamp-3",
-                "p.mt-24.text-center.font-bold.text-white.text-xs.px-3.line-clamp-3"
-            ]
-            for selector in unwanted_selectors:
-                for match in content_div.select(selector):
-                    match.decompose()
-            
-            # Обработка картинок (Lazy Loading + Абсолютные ссылки)
-            for img in content_div.find_all("img"):
-                real_src = img.get("data-src") or img.get("data-original") or img.get("src")
+        # Ищем главное изображение статьи
+        img_tag = soup.find("img", class_=lambda x: x and "mx-auto" in x and "cursor-pointer" in x)
+        if img_tag:
+            # Защита от lazy-loading (берем src, если data-src нет)
+            img_src = img_tag.get("src") or img_tag.get("data-src")
+            if img_src:
+                img_src = img_src.strip()
+                if not img_src.startswith("http"):
+                    img_src = "https://turkmenportal.com" + img_src
                 
-                if real_src:
-                    real_src = real_src.strip()
-                    if not real_src.startswith("http"):
-                        real_src = "https://turkmenportal.com" + real_src
-                    
-                    img["src"] = real_src
-                    img["style"] = "display: block; max-width: 100%; height: auto; margin: 15px auto;"
-                    if img.get("loading"):
-                        del img["loading"]
-                    
-            content_html = str(content_div)
-        else:
-            paragraphs = soup.find_all("p")
-            if paragraphs:
-                content_html = "".join([str(p) for p in paragraphs if len(p.text.strip()) > 10])
+                # Добавляем изображение в будущую верстку письма
+                content_parts.append(f'<img src="{img_src}" style="display: block; max-width: 100%; height: auto; margin: 15px auto; rounded-md" />')
+
+        # Ищем исключительно параграфы статьи с нужным стилем выравнивания
+        paragraphs = soup.find_all("p", style=lambda x: x and "text-align: justify" in x)
+        if paragraphs:
+            for p in paragraphs:
+                content_parts.append(str(p))
+        
+        # Если ничего не нашли по точным селекторам, подстраховываемся обычными p
+        if not paragraphs:
+            all_p = soup.find_all("p")
+            if all_p:
+                content_parts.append("".join([str(p) for p in all_p if len(p.text.strip()) > 10]))
             else:
-                content_html = "Не удалось распарсить текст."
+                content_parts.append("<p>Не удалось распарсить текст статьи.</p>")
+
+        content_html = "\n".join(content_parts)
 
         return title_text, date_text, content_html
     except Exception as e:
@@ -206,7 +186,10 @@ def check_news():
                         if article_data:
                             title, date_str, content = article_data
                             
-                            # Письмо в формате HTML, сохраняющее исходный стиль статьи
+                            # Тема письма теперь содержит реальный заголовок статьи
+                            email_subject = title
+                            
+                            # Письмо в формате HTML
                             email_body = f"""
                             <html>
                             <head>
@@ -215,7 +198,7 @@ def check_news():
                                     .container {{ max-width: 800px; margin: 0 auto; }}
                                     .meta {{ color: #777; font-size: 14px; margin-bottom: 20px; }}
                                     .title {{ color: #0056b3; text-decoration: none; }}
-                                    .content-body img {{ max-width: 100% !important; height: auto !important; display: block; margin: 15px auto; }}
+                                    .content-body img {{ max-width: 100% !important; height: auto !important; display: block; margin: 15px auto; border-radius: 6px; }}
                                     .content-body p {{ margin-bottom: 15px; text-align: justify; }}
                                 </style>
                             </head>
@@ -237,7 +220,7 @@ def check_news():
                             </html>
                             """
                             
-                            send_email("Turkmenportal", email_body)
+                            send_email(email_subject, email_body)
 
             if new_max_id > last_saved_id:
                 save_last_id(lang, new_max_id)
