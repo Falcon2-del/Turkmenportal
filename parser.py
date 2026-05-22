@@ -44,7 +44,7 @@ def send_email(subject, body_html):
         return
 
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = Header(subject, "utf-8")
+    msg["Subject"] = Header("Türkmenportal", "utf-8")
     msg["From"] = EMAIL_SENDER
     msg["To"] = EMAIL_RECEIVER
 
