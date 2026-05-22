@@ -95,12 +95,23 @@ def parse_article(url):
         title_text = re.sub(r"\s*-\s*Turkmenportal.*", "", title_text, flags=re.IGNORECASE)
         title_text = title_text.replace("turkmenportal.com", "").replace("Turkmenportal", "").strip()
 
-        # 2. Поиск даты публикации
+        # 2. Поиск даты публикации (Новая логика под структуру flex gap-4)
         raw_date = None
-        time_tag = soup.find("time")
-        if time_tag:
-            raw_date = time_tag.get("datetime") or time_tag.text.strip()
-            
+        
+        # Сначала ищем по новому контейнеру, указанному вами
+        date_container = soup.find("div", class_="flex gap-4 items-center")
+        if date_container:
+            # Берем только первый текстовый элемент внутри контейнера, чтобы не захватить просмотры из <span>
+            first_text = date_container.find(text=True)
+            if first_text and first_text.strip():
+                raw_date = first_text.strip()
+        
+        # Резервные варианты на случай, если на каких-то страницах верстка старая
+        if not raw_date:
+            time_tag = soup.find("time")
+            if time_tag:
+                raw_date = time_tag.get("datetime") or time_tag.text.strip()
+                
         if not raw_date:
             date_tag = soup.find(class_="vul-date") or soup.find(class_="date")
             if date_tag:
@@ -114,8 +125,7 @@ def parse_article(url):
         # 3. Сборка контента
         content_parts = []
 
-        # Решение проблемы №5 (Фото): Более надежный поиск главного фото внутри статьи
-        # Ищем картинку, у которой alt совпадает с заголовком, или по структуре классов
+        # Поиск главного фото внутри статьи
         img_tag = soup.find("img", alt=True) or soup.find("img", class_=lambda x: x and "mx-auto" in x)
         if img_tag:
             img_src = img_tag.get("src") or img_tag.get("data-src") or img_tag.get("data-nimg")
@@ -126,24 +136,22 @@ def parse_article(url):
                 
                 content_parts.append(f'<img src="{img_src}" style="display: block; max-width: 100%; height: auto; margin: 15px auto; border-radius: 8px;" />')
 
-        # Решение проблемы №2 (Лишние элементы): Берем СТРОГО только p со стилем выравнивания
+        # Берем СТРОГО только p со стилем выравнивания
         paragraphs = soup.find_all("p", style=lambda x: x and "text-align: justify" in x)
         
         if paragraphs:
             for p in paragraphs:
-                # Дополнительная проверка: исключаем p, если внутри него затесались рекламные классы
                 p_class = "".join(p.get("class", []))
                 if "text-center" in p_class or "line-clamp" in p_class:
                     continue
                 content_parts.append(str(p))
         
-        # Если жесткий фильтр ничего не нашел, берем p из центрального контейнера, игнорируя блоки афиш
+        # Если жесткий фильтр ничего не нашел, берем p из центрального контейнера
         if not content_parts or (len(content_parts) == 1 and img_tag):
             main_container = soup.find("div", class_="vul-content") or soup.find("article")
             if main_container:
                 for p in main_container.find_all("p"):
                     p_class = "".join(p.get("class", []))
-                    # Отсекаем блоки типа "В Ашхабаде состоится концерт..."
                     if "line-clamp" in p_class or "text-xs" in p_class or "mt-24" in p_class:
                         continue
                     if len(p.text.strip()) > 15:
