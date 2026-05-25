@@ -44,7 +44,7 @@ def send_email(subject, body_html):
         return
 
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = Header("Türkmenportal", "utf-8")
+    msg["Subject"] = Header(subject, "utf-8")
     msg["From"] = EMAIL_SENDER
     msg["To"] = EMAIL_RECEIVER
 
@@ -62,7 +62,7 @@ def send_email(subject, body_html):
 
 
 def parse_article(url):
-    """Парсит заголовок, дату и всё содержимое из id='content'"""
+    """Парсит заголовок, дату, титульное фото и всё содержимое из id='content'"""
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -97,8 +97,26 @@ def parse_article(url):
         if not raw_date:
             raw_date = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
-        # 3. Сборка контента строго из главного контейнера id="content"
+        # 3. Сборка контента
         content_parts = []
+        html_images_seen = set()
+
+        # Поиск главной ТИТУЛЬНОЙ картинки (обложки) на странице
+        cover_tag = soup.find("img", class_=lambda x: x and "mx-auto" in x, width="500")
+        if not cover_tag:
+            cover_tag = soup.find("img", class_=lambda x: x and "mx-auto" in x)
+
+        if cover_tag:
+            cover_src = cover_tag.get("src")
+            if cover_src and not cover_src.startswith("data:"):
+                if not cover_src.startswith("http"):
+                    cover_src = "https://turkmenportal.com" + cover_src
+                
+                # Добавляем титульное фото в самое начало контента письма
+                content_parts.append(f'<div style="text-align: center; margin-bottom: 25px;"><img src="{cover_src}" style="max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.15); display: inline-block;" /></div>')
+                html_images_seen.add(cover_src)
+
+        # Сборка содержимого статьи строго из главного контейнера id="content"
         main_container = soup.find("div", id="content")
 
         if main_container:
@@ -111,22 +129,23 @@ def parse_article(url):
                     if text_content:
                         content_parts.append(f'<p style="margin-bottom: 15px; text-align: justify; font-size: 16px;">{text_content}</p>')
                 
-                # Если это блок с картинкой (в твоем примере это span или любой другой оберточный тег)
+                # Если это блок с картинкой внутри статьи (теги картинок или span-обертки)
                 else:
                     img_tag = element.find("img") if element.name != "img" else element
                     if img_tag:
                         src = img_tag.get("src")
                         if src and not src.startswith("data:"):
-                            # Строим абсолютный путь к картинке
                             if not src.startswith("http"):
                                 src = "https://turkmenportal.com" + src
                             
-                            # Пропускаем только заведомый мусор, картинки из uploads пройдут на 100%
-                            if not any(x in src.lower() for x in ["icon", "eye", "avatar", "loader"]):
-                                content_parts.append(f'<div style="text-align: center; margin: 20px 0;"><img src="{src}" style="max-width: 100%; height: auto; border-radius: 6px; display: inline-block;" /></div>')
+                            # Проверяем, чтобы картинка внутри статьи не дублировала заголовочную
+                            if src not in html_images_seen:
+                                html_images_seen.add(src)
+                                if not any(x in src.lower() for x in ["icon", "eye", "avatar", "loader"]):
+                                    content_parts.append(f'<div style="text-align: center; margin: 20px 0;"><img src="{src}" style="max-width: 100%; height: auto; border-radius: 6px; display: inline-block;" /></div>')
 
-        # Если id="content" не отработал (запасной вариант на случай изменений)
-        if not content_parts:
+        # Запасной критический вариант сборки, если id="content" пуст
+        if not main_container or len(content_parts) <= 1:
             paragraphs = soup.find_all("p", style=lambda x: x and "text-align: justify" in x)
             for p in paragraphs:
                 if len(p.text.strip()) > 10:
