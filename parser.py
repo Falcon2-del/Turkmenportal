@@ -101,8 +101,18 @@ def parse_article(url):
         content_parts = []
         html_images_seen = set()
 
-        # Гарантированный поиск главной ТИТУЛЬНОЙ картинки (обложки) по всей странице
-        cover_tag = soup.find("img", src=re.compile(r"uploads", re.IGNORECASE))
+        # Ищем обложку строго внутри тега статьи, либо непосредственно перед блоком контента
+        cover_tag = None
+        article_container = soup.find("article")
+        
+        if article_container:
+            cover_tag = article_container.find("img", src=re.compile(r"uploads", re.IGNORECASE))
+        
+        if not cover_tag:
+            main_container = soup.find("div", id="content")
+            if main_container:
+                # Ищем картинку среди соседей сверху от контейнера id="content"
+                cover_tag = main_container.find_previous("img", src=re.compile(r"uploads", re.IGNORECASE))
 
         if cover_tag:
             cover_src = cover_tag.get("src")
@@ -113,7 +123,6 @@ def parse_article(url):
                 # Добавляем титульное фото в самое начало контента письма
                 content_parts.append(f'<div style="text-align: center; margin-bottom: 25px;"><img src="{cover_src}" style="max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.15); display: inline-block;" /></div>')
                 html_images_seen.add(cover_src)
-                # Дополнительно сохраняем относительный путь, чтобы избежать дублирования внутри id="content"
                 html_images_seen.add(cover_tag.get("src"))
 
         # Сборка содержимого статьи строго из главного контейнера id="content"
