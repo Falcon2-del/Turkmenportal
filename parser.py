@@ -101,10 +101,8 @@ def parse_article(url):
         content_parts = []
         html_images_seen = set()
 
-        # Поиск главной ТИТУЛЬНОЙ картинки (обложки) на странице
-        cover_tag = soup.find("img", class_=lambda x: x and "mx-auto" in x, width="500")
-        if not cover_tag:
-            cover_tag = soup.find("img", class_=lambda x: x and "mx-auto" in x)
+        # Гарантированный поиск главной ТИТУЛЬНОЙ картинки (обложки) по всей странице
+        cover_tag = soup.find("img", src=re.compile(r"uploads", re.IGNORECASE))
 
         if cover_tag:
             cover_src = cover_tag.get("src")
@@ -115,6 +113,8 @@ def parse_article(url):
                 # Добавляем титульное фото в самое начало контента письма
                 content_parts.append(f'<div style="text-align: center; margin-bottom: 25px;"><img src="{cover_src}" style="max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.15); display: inline-block;" /></div>')
                 html_images_seen.add(cover_src)
+                # Дополнительно сохраняем относительный путь, чтобы избежать дублирования внутри id="content"
+                html_images_seen.add(cover_tag.get("src"))
 
         # Сборка содержимого статьи строго из главного контейнера id="content"
         main_container = soup.find("div", id="content")
@@ -135,12 +135,13 @@ def parse_article(url):
                     if img_tag:
                         src = img_tag.get("src")
                         if src and not src.startswith("data:"):
-                            if not src.startswith("http"):
-                                src = "https://turkmenportal.com" + src
-                            
                             # Проверяем, чтобы картинка внутри статьи не дублировала заголовочную
                             if src not in html_images_seen:
                                 html_images_seen.add(src)
+                                
+                                if not src.startswith("http"):
+                                    src = "https://turkmenportal.com" + src
+                                
                                 if not any(x in src.lower() for x in ["icon", "eye", "avatar", "loader"]):
                                     content_parts.append(f'<div style="text-align: center; margin: 20px 0;"><img src="{src}" style="max-width: 100%; height: auto; border-radius: 6px; display: inline-block;" /></div>')
 
